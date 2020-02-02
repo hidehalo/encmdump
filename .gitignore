@@ -1,0 +1,7 @@
+coverage.out
+.idea/
+*.swp
+*.log
+vendor
+.DS_Store
+.vscode
