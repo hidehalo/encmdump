@@ -1,4 +1,6 @@
 # Encmdump
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fhidehalo%2Fencmdump.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fhidehalo%2Fencmdump?ref=badge_shield)
+
 
 Another ncmduper for "easy to use"
 
@@ -19,6 +21,9 @@ $./encmdump -p="example/path"
 ## License
 
 The MIT License (MIT). Please see [License File](LICENSE.md) for more information.
+
+
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fhidehalo%2Fencmdump.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fhidehalo%2Fencmdump?ref=badge_large)
 
 ## Acknowledgments
 
