@@ -1,7 +1,9 @@
 package ncm
 
 import (
+	"bufio"
 	"bytes"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -212,4 +214,177 @@ func Dump(path string, overwrite bool) {
 		addFLACTag(output, cover, &meta)
 	}
 	ConsoleOut(path + "处理成功！")
+}
+
+func addFLACTagFromReader(rd io.Reader, imgData []byte, meta *ncmdump.Meta) *flac.File {
+	f, err := flac.ParseBytes(rd)
+	if err != nil {
+		ConsoleOut(err.Error())
+		return nil
+	}
+	if imgData == nil && meta.Album.CoverUrl != "" {
+		imgData, err = fetchURL(meta.Album.CoverUrl)
+		utils.HandleError(err)
+	}
+	if imgData != nil {
+		picMIME := "image/jpeg"
+		if containPNGHeader(imgData) {
+			picMIME = "image/png"
+		}
+		picture, err := flacpicture.NewFromImageData(flacpicture.PictureTypeFrontCover, "Front cover", imgData, picMIME)
+		if err == nil {
+			picturemeta := picture.Marshal()
+			f.Meta = append(f.Meta, &picturemeta)
+		}
+	} else if meta.Album.CoverUrl != "" {
+		picture := &flacpicture.MetadataBlockPicture{
+			PictureType: flacpicture.PictureTypeFrontCover,
+			MIME:        "-->",
+			Description: "Front cover",
+			ImageData:   []byte(meta.Album.CoverUrl),
+		}
+		picturemeta := picture.Marshal()
+		f.Meta = append(f.Meta, &picturemeta)
+	}
+	var cmtmeta *flac.MetaDataBlock
+	for _, m := range f.Meta {
+		if m.Type == flac.VorbisComment {
+			cmtmeta = m
+			break
+		}
+	}
+	var cmts *flacvorbis.MetaDataBlockVorbisComment
+	if cmtmeta != nil {
+		cmts, err = flacvorbis.ParseFromMetaDataBlock(*cmtmeta)
+		utils.HandleError(err)
+	} else {
+		cmts = flacvorbis.New()
+	}
+	titles, err := cmts.Get(flacvorbis.FIELD_TITLE)
+	utils.HandleError(err)
+	if len(titles) == 0 {
+		if meta.Name != "" {
+			cmts.Add(flacvorbis.FIELD_TITLE, meta.Name)
+		}
+	}
+	albums, err := cmts.Get(flacvorbis.FIELD_ALBUM)
+	utils.HandleError(err)
+	if len(albums) == 0 {
+		if meta.Album != nil && meta.Album.Name != "" {
+			cmts.Add(flacvorbis.FIELD_ALBUM, meta.Album.Name)
+		}
+	}
+	artists, err := cmts.Get(flacvorbis.FIELD_ARTIST)
+	utils.HandleError(err)
+	if len(artists) == 0 {
+		for _, artist := range meta.Artists {
+			cmts.Add(flacvorbis.FIELD_ARTIST, artist.Name)
+		}
+	}
+	res := cmts.Marshal()
+	if cmtmeta != nil {
+		*cmtmeta = res
+	} else {
+		f.Meta = append(f.Meta, &res)
+	}
+	return f
+}
+
+func addMP3TagFromReader(rd io.Reader, imgData []byte, meta *ncmdump.Meta) *id3v2.Tag {
+	tag, err := id3v2.ParseReader(rd, id3v2.Options{Parse: true})
+	utils.HandleError(err)
+	if imgData == nil && meta.Album.CoverUrl != "" {
+		imgData, err = fetchURL(meta.Album.CoverUrl)
+		utils.HandleError(err)
+	}
+	if imgData != nil {
+		picMIME := "image/jpeg"
+		if containPNGHeader(imgData) {
+			picMIME = "image/png"
+		}
+		pic := id3v2.PictureFrame{
+			Encoding:    id3v2.EncodingISO,
+			MimeType:    picMIME,
+			PictureType: id3v2.PTFrontCover,
+			Description: "Front cover",
+			Picture:     imgData,
+		}
+		tag.AddAttachedPicture(pic)
+	} else if meta.Album.CoverUrl != "" {
+		pic := id3v2.PictureFrame{
+			Encoding:    id3v2.EncodingISO,
+			MimeType:    "-->",
+			PictureType: id3v2.PTFrontCover,
+			Description: "Front cover",
+			Picture:     []byte(meta.Album.CoverUrl),
+		}
+		tag.AddAttachedPicture(pic)
+	}
+	if tag.GetTextFrame("TIT2").Text == "" {
+		if meta.Name != "" {
+			tag.AddTextFrame("TIT2", id3v2.EncodingUTF8, meta.Name)
+		}
+	}
+	if tag.GetTextFrame("TALB").Text == "" {
+		if meta.Album != nil && meta.Album.Name != "" {
+			tag.AddTextFrame("TALB", id3v2.EncodingUTF8, meta.Album.Name)
+		}
+	}
+	if tag.GetTextFrame("TPE1").Text == "" {
+		for _, artist := range meta.Artists {
+			tag.AddTextFrame("TPE1", id3v2.EncodingUTF8, artist.Name)
+		}
+	}
+	utils.HandleError(err)
+	err = tag.Save()
+	utils.HandleError(err)
+
+	return tag
+}
+
+func DumpFileData(fp *os.File) ([]byte, *ncmdump.Meta, error) {
+	meta, err := ncmdump.DumpMeta(fp)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	data, err := ncmdump.Dump(fp)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	cover, err := ncmdump.DumpCover(fp)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	switch meta.Format {
+	case "mp3":
+		tmpFile, err := os.CreateTemp("", "tmpfile-")
+		defer tmpFile.Close()
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if _, err = io.Copy(tmpFile, fp); err != nil {
+			return nil, nil, err
+		}
+
+		addMP3TagFromReader(tmpFile, cover, &meta)
+		stat, err := tmpFile.Stat()
+		if err != nil {
+			return nil, nil, err
+		}
+		bs := make([]byte, stat.Size())
+		_, err = bufio.NewReader(tmpFile).Read(bs)
+		data = bs
+		if err != nil && err != io.EOF {
+			return nil, nil, err
+		}
+	case "flac":
+		flacFile := addFLACTagFromReader(fp, cover, &meta)
+		data = flacFile.Marshal()
+	}
+
+	return data, &meta, nil
 }
