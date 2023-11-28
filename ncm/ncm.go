@@ -136,8 +136,8 @@ func addFLACTag(fileName string, imgData []byte, meta *ncmdump.Meta) {
 
 func addMP3Tag(fileName string, imgData []byte, meta *ncmdump.Meta) {
 	tag, err := id3v2.Open(fileName, id3v2.Options{Parse: true})
-	defer tag.Close()
 	utils.HandleError(err)
+	defer tag.Close()
 	if imgData == nil && meta.Album.CoverUrl != "" {
 		imgData, err = fetchURL(meta.Album.CoverUrl)
 		utils.HandleError(err)
@@ -190,8 +190,8 @@ func IsNCM(name string) bool {
 
 func Dump(path string, overwrite bool) {
 	fp, err := os.Open(path)
-	defer fp.Close()
 	utils.HandleError(err)
+	defer fp.Close()
 	meta, err := ncmdump.DumpMeta(fp)
 	utils.HandleError(err)
 	output := strings.Replace(path, ".ncm", "."+meta.Format, -1)
@@ -219,8 +219,7 @@ func Dump(path string, overwrite bool) {
 func addFLACTagFromReader(rd io.Reader, imgData []byte, meta *ncmdump.Meta) *flac.File {
 	f, err := flac.ParseBytes(rd)
 	if err != nil {
-		ConsoleOut(err.Error())
-		return nil
+		utils.HandleError(err)
 	}
 	if imgData == nil && meta.Album.CoverUrl != "" {
 		imgData, err = fetchURL(meta.Album.CoverUrl)
@@ -290,7 +289,7 @@ func addFLACTagFromReader(rd io.Reader, imgData []byte, meta *ncmdump.Meta) *fla
 	return f
 }
 
-func addMP3TagFromReader(rd io.Reader, imgData []byte, meta *ncmdump.Meta) *id3v2.Tag {
+func createMP3TagFromReader(rd io.Reader, imgData []byte, meta *ncmdump.Meta) *id3v2.Tag {
 	tag, err := id3v2.ParseReader(rd, id3v2.Options{Parse: true})
 	utils.HandleError(err)
 	if imgData == nil && meta.Album.CoverUrl != "" {
@@ -335,9 +334,6 @@ func addMP3TagFromReader(rd io.Reader, imgData []byte, meta *ncmdump.Meta) *id3v
 			tag.AddTextFrame("TPE1", id3v2.EncodingUTF8, artist.Name)
 		}
 	}
-	utils.HandleError(err)
-	err = tag.Save()
-	utils.HandleError(err)
 
 	return tag
 }
@@ -358,31 +354,38 @@ func DumpFileData(fp *os.File) ([]byte, *ncmdump.Meta, error) {
 		return nil, nil, err
 	}
 
+	_tmpFile, err := os.CreateTemp("", "tmpfile-*")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer os.Remove(_tmpFile.Name())
+
 	switch meta.Format {
 	case "mp3":
-		tmpFile, err := os.CreateTemp("", "tmpfile-")
-		defer tmpFile.Close()
+		idv3Tag := createMP3TagFromReader(fp, cover, &meta)
+		tagSize, err := idv3Tag.WriteTo(_tmpFile)
 		if err != nil {
 			return nil, nil, err
 		}
+		defer idv3Tag.Close()
 
-		if _, err = io.Copy(tmpFile, fp); err != nil {
-			return nil, nil, err
-		}
-
-		addMP3TagFromReader(tmpFile, cover, &meta)
-		stat, err := tmpFile.Stat()
-		if err != nil {
-			return nil, nil, err
-		}
-		bs := make([]byte, stat.Size())
-		_, err = bufio.NewReader(tmpFile).Read(bs)
-		data = bs
+		buffer := make([]byte, tagSize)
+		_tmpFile.Seek(0, io.SeekStart)
+		_, err = bufio.NewReader(_tmpFile).Read(buffer)
 		if err != nil && err != io.EOF {
 			return nil, nil, err
 		}
+		data = append(buffer, data...)
 	case "flac":
-		flacFile := addFLACTagFromReader(fp, cover, &meta)
+		_, err = _tmpFile.Write(data)
+		if err != nil && err != io.EOF {
+			return nil, nil, err
+		}
+		_, err = _tmpFile.Seek(0, io.SeekStart)
+		if err != nil && err != io.EOF {
+			return nil, nil, err
+		}
+		flacFile := addFLACTagFromReader(_tmpFile, cover, &meta)
 		data = flacFile.Marshal()
 	}
 
